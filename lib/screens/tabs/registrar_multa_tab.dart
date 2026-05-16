@@ -9,151 +9,166 @@ class RegistrarMultaTab extends StatefulWidget {
 }
 
 class _RegistrarMultaTabState extends State<RegistrarMultaTab> {
-  // Controladores con valores iniciales
-  final _nombreController = TextEditingController();
-  final _valorController = TextEditingController(text: "2000");
-  final _motivoController = TextEditingController();
+  final TextEditingController _nombreController = TextEditingController();
+  final TextEditingController _valorController = TextEditingController();
+  final TextEditingController _motivoController = TextEditingController();
 
-  String _tipoMulta = "Grosería";
-  final List<String> _tipos = ["Grosería", "Llegó tarde", "Falta de respeto", "Otra"];
+  String? _categoriaSeleccionada = "Otra";
 
-  // Función para mostrar mensajes sin repetir código
-  void _mostrarSnackBar(String mensaje, {Color? color}) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(mensaje),
-        backgroundColor: color,
-      ),
-    );
+  // Buscar deudores existentes directamente desde Firestore de forma limpia
+  Future<List<String>> _obtenerSugerenciasFirebase(String query) async {
+    if (query.length < 2) return [];
+
+    final snapshot = await FirebaseFirestore.instance
+        .collection('movimientos')
+        .where('nombreDeudor', isGreaterThanOrEqualTo: query.toLowerCase())
+        .where('nombreDeudor', isLessThanOrEqualTo: '${query.toLowerCase()}\uf8ff')
+        .limit(15) // Un margen extra antes de remover duplicados
+        .get();
+
+    return snapshot.docs
+        .map((doc) => (doc.data()['nombreDeudor'] as String).toUpperCase())
+        .toSet() // Remueve duplicados automáticamente
+        .toList();
   }
 
-  Future<void> _registrarMulta() async {
-    final nombre = _nombreController.text.trim();
-    final motivo = _motivoController.text.trim();
+  Future<void> _guardarMulta() async {
+    if (_nombreController.text.trim().isEmpty || _valorController.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Nombre y valor son obligatorios")),
+      );
+      return;
+    }
+
     final valor = int.tryParse(_valorController.text) ?? 0;
 
-    // Validaciones iniciales
-    if (nombre.isEmpty) {
-      _mostrarSnackBar("Ingrese el nombre del deudor", color: Colors.red);
-      return;
+    await FirebaseFirestore.instance.collection('movimientos').add({
+      'tipo': 'multa',
+      'nombreDeudor': _nombreController.text.trim().toLowerCase(),
+      'valor': valor,
+      'descripcion': _categoriaSeleccionada,
+      'motivo': _motivoController.text.trim().isEmpty 
+          ? _categoriaSeleccionada 
+          : _motivoController.text.trim(),
+      'fecha': Timestamp.now(),
+      'registradoPor': 'admin',
+    });
+
+    _nombreController.clear();
+    _valorController.clear();
+    _motivoController.clear();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("✅ Multa registrada correctamente"), 
+          backgroundColor: Colors.green
+        ),
+      );
     }
-
-    if (valor <= 0) {
-      _mostrarSnackBar("Ingrese un valor válido", color: Colors.red);
-      return;
-    }
-
-    try {
-      // Operación asíncrona
-      await FirebaseFirestore.instance.collection('movimientos').add({
-        'tipo': 'multa',
-        'nombreDeudor': nombre.toLowerCase(),
-        'valor': valor,
-        'descripcion': _tipoMulta,
-        'motivo': motivo.isEmpty ? 'Sin motivo' : motivo,
-        'fecha': Timestamp.now(),
-        'registradoPor': "admin",
-      });
-
-      // GUARDIA: Verificación de montaje después del await
-      if (!mounted) return;
-
-      _mostrarSnackBar("✅ Multa registrada correctamente", color: Colors.green);
-
-      // Limpiar formulario tras éxito
-      setState(() {
-        _nombreController.clear();
-        _motivoController.clear();
-        _valorController.text = "2000";
-        _tipoMulta = "Grosería";
-      });
-
-    } catch (e) {
-      // GUARDIA: Verificación de montaje en caso de error
-      if (!mounted) return;
-      _mostrarSnackBar("Error al registrar: $e", color: Colors.red);
-    }
-  }
-
-  @override
-  void dispose() {
-    // Es buena práctica liberar los controladores
-    _nombreController.dispose();
-    _valorController.dispose();
-    _motivoController.dispose();
-    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(16.0),
-      child: SingleChildScrollView(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Text(
-              "Nueva Multa",
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text("Nueva Multa", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+
+          const SizedBox(height: 20),
+
+          // BUSCADOR CON AUTOCOMPLETAR REESTRUCTURADO
+          Autocomplete<String>(
+            optionsBuilder: (TextEditingValue textEditingValue) async {
+              if (textEditingValue.text.length < 2) {
+                return const Iterable<String>.empty();
+              }
+              // Llama a la base de datos de manera limpia y síncrona para el Widget
+              return await _obtenerSugerenciasFirebase(textEditingValue.text);
+            },
+            onSelected: (String selection) {
+              _nombreController.text = selection;
+            },
+            fieldViewBuilder: (context, textController, focusNode, onFieldSubmitted) {
+              // Sincronizamos el controlador interno del Autocomplete con el nuestro global
+              if (_nombreController.text != textController.text && _nombreController.text.isEmpty) {
+                textController.text = _nombreController.text;
+              }
+              
+              return TextField(
+                controller: textController,
+                focusNode: focusNode,
+                onChanged: (val) {
+                  _nombreController.text = val;
+                },
+                decoration: const InputDecoration(
+                  labelText: "Nombre del Aprendiz",
+                  prefixIcon: Icon(Icons.person_search),
+                  border: OutlineInputBorder(),
+                ),
+              );
+            },
+          ),
+
+          const SizedBox(height: 16),
+
+          DropdownButtonFormField<String>(
+            initialValue: _categoriaSeleccionada,
+            decoration: const InputDecoration(
+              labelText: "Categoría de la Multa",
+              border: OutlineInputBorder(),
             ),
-            const SizedBox(height: 20),
-            TextField(
-              controller: _nombreController,
-              decoration: const InputDecoration(
-                labelText: "Nombre del Aprendiz",
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.person),
-              ),
+            items: const [
+              DropdownMenuItem(value: "Uniforme", child: Text("Uniforme")),
+              DropdownMenuItem(value: "Aseo", child: Text("Aseo")),
+              DropdownMenuItem(value: "Grosería", child: Text("Grosería")),
+              DropdownMenuItem(value: "Otra", child: Text("Otra")),
+            ],
+            onChanged: (value) => setState(() => _categoriaSeleccionada = value),
+          ),
+
+          const SizedBox(height: 16),
+
+          TextField(
+            controller: _valorController,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: "Valor (COP)",
+              prefixText: "\$ ",
+              border: OutlineInputBorder(),
             ),
-            const SizedBox(height: 15),
-            DropdownButtonFormField<String>(
-              initialValue: _tipoMulta,
-              decoration: const InputDecoration(
-                labelText: "Categoría de la Multa",
-                border: OutlineInputBorder(),
-              ),
-              items: _tipos.map((String tipo) {
-                return DropdownMenuItem(value: tipo, child: Text(tipo));
-              }).toList(),
-              onChanged: (nuevoValor) {
-                setState(() {
-                  _tipoMulta = nuevoValor!;
-                });
-              },
+          ),
+
+          const SizedBox(height: 16),
+
+          TextField(
+            controller: _motivoController,
+            decoration: const InputDecoration(
+              labelText: "Motivo adicional (Opcional)",
+              border: OutlineInputBorder(),
             ),
-            const SizedBox(height: 15),
-            TextField(
-              controller: _valorController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: "Valor (COP)",
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.attach_money),
-              ),
-            ),
-            const SizedBox(height: 15),
-            TextField(
-              controller: _motivoController,
-              decoration: const InputDecoration(
-                labelText: "Motivo adicional (Opcional)",
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.notes),
-              ),
-            ),
-            const SizedBox(height: 25),
-            ElevatedButton.icon(
-              onPressed: _registrarMulta,
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 15),
-                backgroundColor: Colors.indigo,
-                foregroundColor: Colors.white,
-              ),
+            maxLines: 2,
+          ),
+
+          const SizedBox(height: 30),
+
+          SizedBox(
+            width: double.infinity,
+            height: 55,
+            child: ElevatedButton.icon(
+              onPressed: _guardarMulta,
               icon: const Icon(Icons.save),
-              label: const Text("GUARDAR REGISTRO"),
+              label: const Text("GUARDAR REGISTRO", style: TextStyle(fontSize: 18)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
